@@ -43,13 +43,33 @@ jobs:
         server-id: ossrh # Value of the distributionManagement/repository/id field of the pom.xml
         settings-path: ${{ github.workspace }} # location for the settings.xml file
 
-    - name: Set up GraalVM
+    - name: Install GraalVM Manually
       if: ${{ inputs.GRAALVM == true }}
-      uses: graalvm/setup-graalvm@v1
-      with:
-        java-version: '21.0.5+9.1'
-        distribution: 'graalvm-community'
-        components: 'native-image'
+      run: |
+        set -e  # Exit on any error
+    
+        GRAALVM_VERSION="21.0.5+9.1"
+        GRAALVM_URL="https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_linux-x64_bin.tar.gz"
+
+        echo "Downloading GraalVM from $GRAALVM_URL..."
+    
+        if ! wget -O graalvm.tar.gz "$GRAALVM_URL"; then
+          echo "Error: Failed to download GraalVM. Check if the version exists: $GRAALVM_VERSION"
+          exit 1
+        fi
+
+        mkdir -p /opt/graalvm
+        tar -xzf graalvm.tar.gz -C /opt/graalvm --strip-components=1
+        rm graalvm.tar.gz
+
+        echo "Setting up environment variables..."
+        echo "GRAALVM_HOME=/opt/graalvm" >> $GITHUB_ENV
+        echo "/opt/graalvm/bin" >> $GITHUB_PATH
+        export PATH="/opt/graalvm/bin:$PATH"
+
+        echo "Verifying Java version..."
+        java -version
+
 
     - name: Cache local Maven repository
       uses: actions/cache@v4
