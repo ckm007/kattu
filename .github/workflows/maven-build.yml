@@ -11,7 +11,11 @@ on:
         type: string
       MAVEN_NON_EXEC_ARTIFACTS:
         required: false
-        type: string 
+        type: string
+      GRAALVM:
+        required: false
+        type: boolean
+        default: false
     secrets:
       OSSRH_USER:
         required: true
@@ -29,13 +33,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
+
     - name: Set up JDK 21
+      if: ${{ inputs.GRAALVM == false }}
       uses: actions/setup-java@v3
       with:
         distribution: 'temurin'
         java-version: '21'
         server-id: ossrh # Value of the distributionManagement/repository/id field of the pom.xml
         settings-path: ${{ github.workspace }} # location for the settings.xml file
+
+    - name: Set up GraalVM
+      if: ${{ inputs.GRAALVM == true }}
+      uses: graalvm/setup-graalvm@v1
+      with:
+        java-version: '21.0.5'
+        distribution: 'graalvm-community'
+        components: 'native-image'
 
     - name: Cache local Maven repository
       uses: actions/cache@v4
@@ -51,21 +65,20 @@ jobs:
         echo "BRANCH_NAME=$(echo ${{ github.ref }} | sed -e 's,.*/\(.*\),\1,')" >> $GITHUB_ENV
         echo "GPG_TTY=$(tty)" >> $GITHUB_ENV  
 
-    - name: Setup branch and GPG public key
+    - name: Setup GPG keys
       run: |
         # Strip git ref prefix from version
         echo ${{ env.BRANCH_NAME }}
         echo ${{ env.GPG_TTY }}
         sudo apt-get --yes install gnupg2
         gpg2 --import ./.github/keys/mosipgpgkey_pub.gpg 
-        gpg2 --quiet --batch --passphrase=${{secrets.GPG_SECRET}}  --allow-secret-key-import --import ./.github/keys/mosipgpgkey_sec.gpg 
+        gpg2 --quiet --batch --passphrase=${{secrets.GPG_SECRET}} --allow-secret-key-import --import ./.github/keys/mosipgpgkey_sec.gpg 
 
-    - name: Install xmlstartlet and xmllint
+    - name: Install xmlstarlet and xmllint
       run: |
         sudo rm /etc/apt/sources.list.d/microsoft-prod.list
         sudo apt-get update
         sudo apt-get install xmlstarlet libxml2-utils
-
     - name: Setup the settings file for ossrh server
       run: echo "<settings> <servers> <server> <id>ossrh</id> <username>${{secrets.OSSRH_USER}}</username> <password>${{secrets.OSSRH_SECRET}}</password> </server> </servers> <profiles> <profile> <id>ossrh</id> <activation> <activeByDefault>true</activeByDefault> </activation> <properties> <gpg.executable>gpg2</gpg.executable> <gpg.passphrase>${{secrets.GPG_SECRET}}</gpg.passphrase> </properties> </profile> <profile> <id>allow-snapshots</id> <activation><activeByDefault>true</activeByDefault></activation> <repositories> <repository> <id>snapshots-repo</id> <url>https://oss.sonatype.org/content/repositories/snapshots</url> <releases><enabled>false</enabled></releases> <snapshots><enabled>true</enabled></snapshots> </repository> <repository> <id>releases-repo</id> <url>https://oss.sonatype.org/service/local/staging/deploy/maven2</url> <releases><enabled>true</enabled></releases> <snapshots><enabled>false</enabled></snapshots> </repository> <repository> <id>danubetech-maven-public</id> <url>https://repo.danubetech.com/repository/maven-public/</url> </repository> </repositories> </profile> <profile> <id>sonar</id> <properties> <sonar.sources>.</sonar.sources> <sonar.host.url>https://sonarcloud.io</sonar.host.url> </properties> <activation> <activeByDefault>false</activeByDefault> </activation> </profile> </profiles> </settings>" > $GITHUB_WORKSPACE/settings.xml
 
@@ -102,39 +115,53 @@ jobs:
         done
 
     - name: Build with Maven
+      if: ${{ inputs.GRAALVM == false }}
       run: cd ${{ inputs.SERVICE_LOCATION }} && mvn -U -B package -Dmaven.wagon.http.retryHandler.count=2 --file pom.xml -s $GITHUB_WORKSPACE/settings.xml
 
-    - name: Ready the springboot executable artifacts
-      if: ${{ !contains(github.ref, 'master') || !contains(github.ref, 'main') }}
-      run: |
-        ## FIND JARS & COPY ONLY EXECUTABLE JARs STORED UNDER TARGET DIRECTORY 
-        find ${{ inputs.SERVICE_LOCATION }} -path '*/target/*' -name '*.jar'  -type f  -executable -exec zip ${{ inputs.BUILD_ARTIFACT }}.zip {} +
+    - name: Build with GraalVM
+      if: ${{ inputs.GRAALVM == true }}
+      run: cd ${{ inputs.SERVICE_LOCATION }} && mvn clean -Pnative native:compile -Djava.security.manager=allow -Dgraalvm.config.enabled=true -Dgraalvm.native-image.configuration.enabled=true
 
-    - name: Ready the springboot non-executable artifacts
-      if: ${{ inputs.MAVEN_NON_EXEC_ARTIFACTS }}
+    - name: Prepare artifact paths and zip them
       run: |
+        ARTIFACTS_DIR="${{ github.workspace }}/artifacts"
+        ZIP_FILE="${{ github.workspace }}/${{ inputs.BUILD_ARTIFACT }}.zip"
+
+        mkdir -p "$ARTIFACTS_DIR"
+
+        # Copy JARs and Executables
+        find ${{ inputs.SERVICE_LOCATION }}/target/ -type f \( -name "*.jar" -o -name "*.exe" -o -name "*.native" -o -name "*.bin" \) -exec cp {} "$ARTIFACTS_DIR/" \;
+
+        # Copy non-executable artifacts if they exist
+        if [[ ! -z "${{ inputs.MAVEN_NON_EXEC_ARTIFACTS }}" ]]; then
           IFS=',' read -ra ARTIFACTS <<< "${{ inputs.MAVEN_NON_EXEC_ARTIFACTS }}"
           for ARTIFACT in "${ARTIFACTS[@]}"; do
-            artifact_path="*/target/${ARTIFACT}"
-            if ls $artifact_path 1> /dev/null 2>&1; then
-              echo "Adding non-executable ARTIFACT: $artifact_path to release zip"
-              zip -r ${{ inputs.BUILD_ARTIFACT }}.zip $artifact_path
+            artifact_path="${{ inputs.SERVICE_LOCATION }}/target/$ARTIFACT"
+            if [[ -f "$artifact_path" ]]; then
+              echo "Adding non-executable artifact: $artifact_path"
+              cp "$artifact_path" "$ARTIFACTS_DIR/"
             else
-              echo "Warning: ARTIFACT $ARTIFACT not found"
+              echo "Warning: Artifact $ARTIFACT not found"
             fi
           done
+        fi
 
-    - name: Upload the springboot jars
-      if: ${{ !contains(github.ref, 'master') || !contains(github.ref, 'main') }}
+        # Zip all artifacts
+        cd "$ARTIFACTS_DIR"
+        zip -r "$ZIP_FILE" ./*
+        echo "Created ZIP file: $ZIP_FILE"
+
+    - name: Upload Zipped Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.BUILD_ARTIFACT }}
-        path: ./${{ inputs.BUILD_ARTIFACT }}.zip
+        path: ${{ github.workspace }}/${{ inputs.BUILD_ARTIFACT }}.zip
+        if-no-files-found: error
 
     - uses: 8398a7/action-slack@v3
       with:
         status: ${{ job.status }}
         fields: repo,message,author,commit,workflow,job # selectable (default: repo,message)
       env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} # required
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}  # required
       if: "${{ github.event_name != 'pull_request' && failure() }}" # Pick up events even if the job fails or is canceled.
