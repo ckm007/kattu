@@ -47,7 +47,7 @@ jobs:
       if: ${{ inputs.GRAALVM == true }}
       uses: graalvm/setup-graalvm@v1
       with:
-        java-version: '21'
+        java-version: '21.0.5+9.1'
         distribution: 'graalvm-community'
         components: 'native-image'
 
