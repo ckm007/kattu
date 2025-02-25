@@ -48,7 +48,7 @@ jobs:
       run: |
         set -e  # Exit on any error
 
-        GRAALVM_VERSION="21.0.5+9.1"
+        GRAALVM_VERSION="21.0.2"
         GRAALVM_URL="https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-$GRAALVM_VERSION/graalvm-community-jdk-$GRAALVM_VERSION_linux-x64_bin.tar.gz"
 
         echo "Downloading GraalVM from $GRAALVM_URL..."
