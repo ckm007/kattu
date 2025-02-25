@@ -47,12 +47,12 @@ jobs:
       if: ${{ inputs.GRAALVM == true }}
       run: |
         set -e  # Exit on any error
-    
+
         GRAALVM_VERSION="21.0.5+9.1"
-        GRAALVM_URL="https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.2/graalvm-community-jdk-21.0.2_linux-x64_bin.tar.gz"
+        GRAALVM_URL="https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-$GRAALVM_VERSION/graalvm-community-jdk-$GRAALVM_VERSION_linux-x64_bin.tar.gz"
 
         echo "Downloading GraalVM from $GRAALVM_URL..."
-    
+
         if ! wget -O graalvm.tar.gz "$GRAALVM_URL"; then
           echo "Error: Failed to download GraalVM. Check if the version exists: $GRAALVM_VERSION"
           exit 1
@@ -64,10 +64,12 @@ jobs:
 
         echo "Setting up environment variables..."
         echo "GRAALVM_HOME=/opt/graalvm" >> $GITHUB_ENV
+        echo "JAVA_HOME=/opt/graalvm" >> $GITHUB_ENV  # Ensure Maven uses GraalVM Java
         echo "/opt/graalvm/bin" >> $GITHUB_PATH
+        export JAVA_HOME="/opt/graalvm"
         export PATH="/opt/graalvm/bin:$PATH"
 
-        echo "Verifying Java and maven version..."
+        echo "Verifying Java and Maven versions..."
         java -version
         mvn -version
 
